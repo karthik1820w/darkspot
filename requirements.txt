@@ -1,0 +1,5 @@
+# Pinned to the versions tested here.
+pypdf==5.9.0
+# Optional live reader only. 1.17.0: the citation fields llm.py reads (cited_text, char_location) were checked offline in this SDK version;
+# a live call with a real key and model has NOT been run.
+anthropic==1.17.0

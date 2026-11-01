@@ -1,8 +1,8 @@
-import os, sys, unittest, json, threading, urllib.request
+import os, sys, unittest, json, threading, urllib.request, http.server, importlib.util, pathlib
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 os.environ["DARKSPOT_TODAY"] = "2026-10-31"
 import base64, time
-from darkspot import analyze as A, net, facts, text as T, server, checklist as C
+from darkspot import analyze as A, net, facts, text as T, server, checklist as C, api
 
 def result():
     return A.analyze("q", "scholarship", A.load_sources(sample=True))
@@ -43,38 +43,6 @@ class Core(unittest.TestCase):
     def test_html_not_executed_as_text(self):
         p = T.parse_source("<p>Hi</p><script>alert(1)</script><style>x{}</style>")
         self.assertEqual(p["text"], "Hi")
-    def test_server_end_to_end(self):
-        srv = server.ThreadingHTTPServer(("127.0.0.1", 0), server.H); port = srv.server_address[1]
-        threading.Thread(target=srv.serve_forever, daemon=True).start()
-        def post(b):
-            req = urllib.request.Request(f"http://127.0.0.1:{port}/api/analyze", json.dumps(b).encode(), {"Content-Type": "application/json"})
-            try: return urllib.request.urlopen(req)
-            except urllib.error.HTTPError as e: return e
-        def events(r): return [json.loads(l) for l in r.read().decode().splitlines() if l.strip()]
-        r = post({"sample": True}); self.assertEqual(r.status, 200); self.assertIn("default-src 'none'", r.headers["Content-Security-Policy"])
-        ev = events(r); self.assertEqual([e["stage"] for e in ev if "stage" in e][-1], 6); self.assertIn("done", ev[-1])
-        self.assertEqual({e["stage"] for e in ev if "stage" in e}, {1, 2, 3, 4, 5, 6})
-        d = events(post({"question": "q", "urls": ["http://127.0.0.1/"]}))[-1]["done"]; self.assertIn("private or local", d["sources"][0]["error"])
-        self.assertEqual(post({"question": ""}).status, 400); self.assertEqual(post({"question": "q"}).status, 400)
-        self.assertEqual(post({"question": "q", "template": "x", "texts": [{"text": "a"}]}).status, 400)
-        srv.shutdown()
-    def test_progress_really_streams(self):
-        orig = A.load_sources
-        def slow(*a, emit=A.noop, **k):
-            emit(3, "first"); time.sleep(0.6); return orig(sample=True, emit=emit)
-        A.load_sources = slow
-        try:
-            srv = server.ThreadingHTTPServer(("127.0.0.1", 0), server.H); port = srv.server_address[1]
-            threading.Thread(target=srv.serve_forever, daemon=True).start()
-            req = urllib.request.Request(f"http://127.0.0.1:{port}/api/analyze", json.dumps({"question": "q", "texts": [{"text": "x"}]}).encode(), {"Content-Type": "application/json"})
-            r = urllib.request.urlopen(req); t0, seen = time.time(), {}
-            for line in r:
-                e = json.loads(line)
-                if e.get("msg") == "first": seen["first"] = time.time() - t0
-                if "done" in e: seen["done"] = time.time() - t0
-            srv.shutdown()
-        finally: A.load_sources = orig
-        self.assertLess(seen["first"], 0.3); self.assertGreater(seen["done"], 0.55)
     def test_negation_is_a_conflict_not_a_confirmation(self):
         tx = [("A", "Applicants must submit an income certificate."), ("B", "You do not need an income certificate.")]
         r = A.analyze("q", "scholarship", A.load_sources(texts=tx)); d = next(i for i in r["items"] + r["confirmed"] if i["slot"] == "documents")
@@ -116,5 +84,107 @@ class Core(unittest.TestCase):
         pdf += b"trailer<</Size %d/Root 1 0 R>>\nstartxref\n%d\n%%%%EOF" % (len(objs) + 1, x)
         s = A.load_sources(pdfs=[("notice.pdf", base64.b64encode(pdf).decode())])[0]
         self.assertIsNone(s["error"]); self.assertIn("30 November 2026", s["text"]); self.assertEqual(s["authority"], "uploaded")
+
+    # ---------- Vercel-readiness, API, and new product features ----------
+    def _local(self):
+        srv = server.ThreadingHTTPServer(("127.0.0.1", 0), server.H); threading.Thread(target=srv.serve_forever, daemon=True).start()
+        port = srv.server_address[1]
+        def post(path, b, raw=None):
+            req = urllib.request.Request(f"http://127.0.0.1:{port}{path}", raw or json.dumps(b).encode(), {"Content-Type": "application/json"})
+            try: r = urllib.request.urlopen(req)
+            except urllib.error.HTTPError as e: r = e
+            return r.status, json.loads(r.read()), r.headers
+        return srv, post, port
+    def test_staged_api_end_to_end(self):
+        srv, post, _ = self._local()
+        try:
+            st, cl, h = post("/api/checklist", {"question": "Aarohan scholarship?"}); self.assertEqual(st, 200); self.assertIn("default-src 'none'", h["Content-Security-Policy"])
+            srcs = [post("/api/sources", {"sample": i, "idx": i})[1] for i in (1, 2, 3)]
+            st, r, _ = post("/api/analyze", {"question": "q", "checklist": cl, "sources": srcs}); self.assertEqual((st, r["verdict"][:12]), (200, "Not ready ye"))
+            self.assertEqual(post("/api/analyze", {"question": "q", "checklist": cl, "sources": []})[0], 400)
+            self.assertEqual(post("/api/checklist", {"question": ""})[0], 400); self.assertEqual(post("/api/checklist", {"question": "x", "template": "zz"})[0], 400)
+            self.assertEqual(post("/api/sources", {})[0], 400); self.assertEqual(post("/api/nope", {})[0], 404)
+            self.assertEqual(post("/api/analyze", None, raw=b"not json")[0], 400); self.assertEqual(post("/api/analyze", None, raw=b"[1]")[0], 400)
+            bad = post("/api/sources", {"url": "http://127.0.0.1/"})[1]; self.assertIn("private or local", bad["error"])
+            st, r, _ = post("/api/analyze", {"question": "q", "checklist": cl, "sources": [bad]}); self.assertEqual(st, 200)   # a failed source degrades gracefully
+        finally: srv.shutdown()
+    def test_oversized_body_rejected(self):
+        old = api.MAX_BODY; api.MAX_BODY = 100
+        try:
+            srv, post, _ = self._local()
+            try: self.assertEqual(post("/api/sources", {"text": "x" * 500})[0], 413)
+            finally: srv.shutdown()
+        finally: api.MAX_BODY = old
+    def test_tampered_source_is_rejected(self):
+        s = api.do_sources({"sample": 1}); s["text"] += " Last date to apply: 1 January 2030."
+        with self.assertRaises(api.ApiError): api.from_wire(s, 1)
+    def test_signatures_enforced_when_secret_set(self):
+        os.environ["DARKSPOT_SECRET"] = "test-secret"
+        try:
+            s = api.do_sources({"sample": 1}); self.assertTrue(s["sig"]); api.from_wire(dict(s), 1)
+            for field, val in (("date", "2030-01-01"), ("authority", "official" if s["authority"] != "official" else "community")):
+                t = dict(s); t[field] = val
+                with self.assertRaises(api.ApiError, msg=field): api.from_wire(t, 1)
+            t = dict(s); t["sig"] = ""
+            with self.assertRaises(api.ApiError): api.from_wire(t, 1)
+        finally: del os.environ["DARKSPOT_SECRET"]
+    def test_checklist_roundtrip_and_validation(self):
+        cl = api.do_checklist({"question": "student visa"}); self.assertEqual([x["id"] for x in C.restore(cl)], [x["id"] for x in C.restore({"template": "visa"})])
+        self.assertEqual(C.restore({"items": [{"id": "bad id", "label": "x", "kind": "text", "terms": ["a"]}]}), []); self.assertEqual(C.restore("junk"), [])
+    def test_vercel_files_are_wired_correctly(self):
+        root = pathlib.Path(__file__).resolve().parent.parent; v = json.loads((root / "vercel.json").read_text())
+        csp = next(h["value"] for h in v["headers"][0]["headers"] if h["key"] == "Content-Security-Policy"); self.assertEqual(csp, api.CSP)   # static and API headers cannot drift
+        for n, fn in (("checklist", api.do_checklist), ("sources", api.do_sources), ("analyze", api.do_analyze)):
+            spec = importlib.util.spec_from_file_location("f_" + n, root / "api" / f"{n}.py"); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+            self.assertTrue(issubclass(m.handler, http.server.BaseHTTPRequestHandler), n)
+        for f in ("index.html", "app.js", "style.css"): self.assertTrue((root / "public" / f).exists(), f)
+        self.assertIn("pypdf==", (root / "requirements.txt").read_text()); self.assertEqual(set(api.ROUTES), {"/api/checklist", "/api/sources", "/api/analyze"})
+    def test_ip_is_pinned_and_hostname_kept(self):
+        seen = {}
+        class S(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                seen["host"] = self.headers["Host"]; b = b"<p>hello pinned</p>"
+                self.send_response(200); self.send_header("Content-Type", "text/html"); self.send_header("Content-Length", str(len(b))); self.end_headers(); self.wfile.write(b)
+            def log_message(self, *a): pass
+        srv = http.server.HTTPServer(("127.0.0.1", 0), S); threading.Thread(target=srv.serve_forever, daemon=True).start(); port = srv.server_address[1]
+        orig = net.resolve; net.resolve = lambda u: ("http", "pinned.example", "127.0.0.1", port, "/")   # "DNS" says pinned.example -> 127.0.0.1
+        try: text, final, trunc = net.fetch("http://pinned.example/")
+        finally: net.resolve = orig; srv.shutdown()
+        self.assertIn("hello pinned", text); self.assertTrue(seen["host"].startswith("pinned.example"))
+    def test_redirect_to_private_address_is_blocked(self):
+        class S(http.server.BaseHTTPRequestHandler):
+            def do_GET(self): self.send_response(302); self.send_header("Location", "http://169.254.169.254/latest/meta-data"); self.end_headers()
+            def log_message(self, *a): pass
+        srv = http.server.HTTPServer(("127.0.0.1", 0), S); threading.Thread(target=srv.serve_forever, daemon=True).start(); port = srv.server_address[1]
+        orig, calls = net.resolve, []
+        def fake(u):
+            calls.append(u); return ("http", "pinned.example", "127.0.0.1", port, "/") if len(calls) == 1 else orig(u)
+        net.resolve = fake
+        try:
+            with self.assertRaises(net.Blocked) as cm: net.fetch("http://pinned.example/")
+        finally: net.resolve = orig; srv.shutdown()
+        self.assertIn("private or local", str(cm.exception))
+    def test_copied_page_is_not_independent_confirmation(self):
+        o = "The scholarship committee announced that the annual merit award covers tuition fees for eligible students who keep a strong academic record. Last date to apply: 30 November 2026. Applicants must submit an income certificate."
+        srcs = [A.make_source(1, "Official", None, o, False, A.today()), A.make_source(2, "Copycat", None, "Great news! " + o + " Share with friends.", False, A.today())]
+        r = A.analyze("q", "scholarship", srcs); d = next(i for i in r["items"] + r["confirmed"] if i["slot"] == "deadline")
+        self.assertEqual(d["state"], "single"); self.assertIn("not independent", d["summary"]); self.assertEqual(r["duplicates"], [["Copycat", "Official"]])
+        other = "A local newspaper reported separately that the deadline is 30 November 2026 for sending in the forms, and that a family income certificate is also needed this year."
+        r = A.analyze("q", "scholarship", [srcs[0], A.make_source(3, "News", None, other, False, A.today())]); self.assertEqual(r["duplicates"], [])
+        self.assertEqual(next(i for i in r["items"] + r["confirmed"] if i["slot"] == "deadline")["state"], "confirmed")
+    def test_changes_since_last_check(self):
+        r1 = result(); self.assertIsNone(r1["changes"]); snap = json.loads(json.dumps(r1["snapshot"]))
+        self.assertEqual(A.analyze("q", "scholarship", A.load_sources(sample=True), previous=snap)["changes"], [])
+        snap["items"]["deadline"]["values"] = ["15 Nov 2026"]; snap["items"]["link"]["state"] = "confirmed"; k = next(iter(snap["sources"])); snap["sources"][k] = "0" * 64
+        ch = A.analyze("q", "scholarship", A.load_sources(sample=True), previous=snap)["changes"]
+        self.assertTrue(any("Deadline" in c and "15 Nov 2026" in c for c in ch)); self.assertTrue(any("Application link" in c and "Confirmed" in c for c in ch)); self.assertTrue(any("Page content changed" in c for c in ch))
+        for junk in ("x", {"items": 1, "sources": {}}, {"items": {"deadline": "z"}, "sources": {}}): A.analyze("q", "scholarship", A.load_sources(sample=True), previous=junk)   # hostile input must not crash
+    def test_readiness_and_email_draft(self):
+        r = result(); self.assertEqual(r["readiness"]["pct"], 36); self.assertEqual(r["readiness"]["band"], "Not ready")
+        e = r["email_draft"]; self.assertIn("Renewal conditions", e); self.assertIn("could not find", e); self.assertNotIn("Award amount", e)   # confirmed items are not asked about
+    def test_receipts(self):
+        r = result()
+        for s in r["sources"]: self.assertEqual(len(s["hash"]), 64); self.assertTrue(s["retrieved_at"].endswith("Z"))
+        s = A.load_sources(sample=True)[0]; import hashlib; self.assertEqual(s["hash"], hashlib.sha256(s["text"].encode()).hexdigest())
 
 if __name__ == "__main__": unittest.main()

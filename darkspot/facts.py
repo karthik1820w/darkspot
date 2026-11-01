@@ -36,7 +36,7 @@ URL = re.compile(r"https?://[^\s)>\]]+")
 DOCS = {"income certificate": r"income (certificate|proof)", "marksheet": r"mark ?sheet|marks? card|transcript",
         "photo ID": r"photo ?id|id proof|identity (card|proof)|aadhaar", "bank passbook": r"passbook|bank (statement|details)",
         "caste certificate": r"caste certificate"}
-NEG = re.compile(r"\b(?:not|never|no longer|without|optional|waived?|exempt\w*)\b|n['’]t\b", re.I)
+NEG = re.compile(r"\b(?:not|never|no longer|no need|nobody|no one|none|without|optional|waived?|exempt\w*)\b|n['’]t\b", re.I)
 
 def negated(q):
     """Quote contains negation or relaxing words. Signal only, shown to the user."""
@@ -80,7 +80,7 @@ SCHEMAS = {
         slot("eligibility", "Eligibility", "money", ["eligib", "income", "criteria"], "Check the eligibility rules on the official notice.", 3,
              r"eligib|family income|income (limit|below|under|cap)"),
         slot("deadline", "Deadline", "date", ["deadline", "last date", "apply by", "closes"], "Confirm the current deadline on the latest official notice.", 5,
-             r"deadline|last date|apply by|closes?\b|due date"),
+             r"deadline|last date|apply by|closes?\b|due date|until|before|shuts?\b|no later than|final date|last day|(?:submit\w*|reach\w*)(?:\s+\w+){0,4}\s+by"),
         slot("documents", "Required documents", "docs", ["document", "certificate", "marksheet", "submit"], "Check the document list on the official notice.", 5,
              r"submit|bring|documents?|certificate|marksheet|passbook"),
         slot("renewal", "Renewal conditions", "text", ["renew", "continuation", "next year", "reapply", "re-apply", "following year", "every year"],
@@ -101,28 +101,37 @@ SCHEMAS = {
         slot("link", "Application link", "url", ["http", "portal", "apply online"], "Use the link from the official site.", 3, r"https?://|portal|apply online")],
     "general": [
         slot("deadline", "Deadline or key date", "date", ["deadline", "last date", "apply by", "closes"], "Confirm dates with the official source.", 5,
-             r"deadline|last date|apply by|closes?\b|due date"),
-        slot("cost", "Cost or fee", "money", ["fee", "cost", "price", "charge"], "Confirm costs with the official source.", 4, r"\bfees?\b|cost|price|charge"),
+             r"deadline|last date|apply by|closes?\b|due date|until|before|shuts?\b|no later than|final date|last day|(?:submit\w*|reach\w*)(?:\s+\w+){0,4}\s+by"),
+        slot("cost", "Cost or fee", "money", ["fee", "cost", "price", "charge"], "Confirm costs with the official source.", 4, r"\bfees?\b|cost|price|charge|\bpay"),
         slot("eligibility", "Eligibility", "text", ["eligib", "requirement", "must"], "Check who qualifies.", 4, r"eligib|requirement|must have"),
         slot("process", "How to apply", "text", ["apply", "process", "procedure", "steps"], "Find the official application steps.", 3, r"how to|steps?|procedure|apply"),
         slot("link", "Official link", "url", ["http", "portal", "website"], "Use the link from the official site.", 3, r"https?://|portal"),
         slot("contact", "Contact", "text", ["contact", "email", "phone", "helpline"], "Note a contact who can confirm details.", 2, r"contact|e-?mail|phone|helpline")],
 }
 
+def _chunks(p, n=300):
+    """Very long runs (no sentence breaks) are cut at spaces so a quote never becomes a whole page."""
+    while len(p) > n:
+        cut = p.rfind(" ", 0, n); cut = cut if cut > 0 else n
+        yield p[:cut].strip(); p = p[cut:].strip()
+    if p: yield p
+
 def sentences(text):
     for line in text.split("\n"):
         for p in re.split(r"(?<=[.!?])\s+(?=[A-Z₹$€£\"“])", line):
-            if p.strip(): yield p.strip()
+            yield from _chunks(p.strip())
 
 class RuleExtractor:
-    """Offline, deterministic: first sentence in each source that matches the slot pattern."""
+    """Offline, deterministic: first sentence in each source that matches the slot pattern, plus the first negated one for text/docs slots."""
     name = "rules"
     def extract(self, src, slots):
         out, seen = [], set()
         for s in sentences(src["text"]):
             for sl in slots:
-                if sl["id"] not in seen and sl["find"].search(s) and normalise(sl["kind"], s) is not None:
-                    seen.add(sl["id"]); out.append({"slot": sl["id"], "quote": s})
+                if not sl["find"].search(s) or normalise(sl["kind"], s) is None: continue
+                if sl["id"] not in seen: seen.add(sl["id"]); out.append({"slot": sl["id"], "quote": s})
+                elif sl["kind"] in ("docs", "text") and negated(s) and not any(o["slot"] == sl["id"] and negated(o["quote"]) for o in out):
+                    out.append({"slot": sl["id"], "quote": s})      # a later "you do NOT need X" must not be hidden by an earlier "you need Y"
         return out
 
 def verify(claim, kind, text):

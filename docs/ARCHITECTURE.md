@@ -1,19 +1,20 @@
-# Architecture (six stages, streamed)
+# Architecture (stateless, client-orchestrated)
 
-    Browser (ui/: no build, CSP-safe, text-only rendering, reads an NDJSON stream)
-       | POST /api/analyze  -> response is NDJSON: {"stage","msg"} ... then {"done": result} | {"error"}
-       | limits: 1.5 MB body, 6 sources, 3 PDFs, 12 req/min/IP, localhost bind
-    server.py: validate (stage 1) -> run
-    1 Question and goal   validate input, topic, reader mode
-    2 Checklist           checklist.build: template | Claude proposal (validated by checklist.clean, falls back to rules)
-    3 Sources             net.fetch (SSRF guard) | PDF text (pypdf) | pasted text | optional search discovery -> text.py (clean text, date, injection flag); authority tag by domain
-    4 Extract + verify    extractor finds QUOTES only; facts.verify: quote must be verbatim in stored text, value re-derived by code; negation guard
-    5 Compare + score     per slot: conflict | stale | confirmed | single | gap/unclear; confidence (rule-of-thumb); coverage meter
-    6 Dashboard           Sourced / Derived / Suggested lanes, side-by-side conflicts, copy / .md / print
+Why: Vercel functions are short-lived, share no memory and have request-size and duration limits. So there is no long-lived connection and no
+server-side session. The browser drives six stages as small independent requests and carries state between them.
 
-Design rules: AI/rules only find quotes; code decides states. No claim without a verbatim quote. Absence is always scoped to pages reviewed.
-Model output (checklist items) is validated and capped; any failure falls back to rules.
-Security: http/https and ports 80/443 only; each redirect hop re-resolved and checked for private IPs; size/time caps; no tools given to the model;
-injection phrases flagged; text-only rendering; CSP default-src 'none'; PDFs: magic-byte check, page cap, encrypted refused.
-Known gaps: DNS-rebinding race between check and connect (pin the IP for production); no authentication; in-memory rate limit;
-live Claude and search paths untested here; confidence is not calibrated against labelled data.
+    Browser (public/: no build, CSP-safe, text-only rendering, localStorage for the last check)
+      1 validate question
+      2 POST /api/checklist    expected-answer checklist (template | Claude proposal, validated; optional search discovery)
+      3 POST /api/sources x N  in PARALLEL, one source each: fetch / PDF / text / sample -> clean text, date, authority, sha256, time, HMAC
+      4+5 POST /api/analyze    verify verbatim, compare, copy-detect, score, diff vs previous snapshot, email draft
+      6 render: source-by-item table (overview), Sourced / Derived / Suggested lanes, side-by-side conflicts, changes, exports
+    api/*.py = three 5-line Vercel functions.  darkspot/api.py = all logic, shared with `python -m darkspot`.
+
+Rules: extractors only FIND quotes; code decides states. Every quote must exist verbatim in the stored text. Model output is validated and capped.
+Trust boundary: the browser echoes sources back to /api/analyze, so the server recomputes hash, flags, dates and staleness, and (with
+DARKSPOT_SECRET) verifies an HMAC over name, url, hash, date, authority and time. Without the secret, integrity is not enforced.
+Security: http/https and ports 80/443 only; DNS resolved once, all addresses must be public, and the connection goes to that exact IP while TLS
+verifies the hostname (no rebinding window); every redirect hop re-validated; size and time caps; PDF magic-byte check, page cap, no encrypted files;
+the model gets no tools; injection phrases flagged; CSP default-src 'none' (same string in vercel.json and code, enforced by a test); 4 MB body cap; generic errors.
+Known gaps: per-instance rate limit (use Vercel Firewall); no auth; confidence and readiness not calibrated on labelled data; Claude, Brave and Vercel paths untested here.

@@ -1,53 +1,74 @@
-"""Safe fetching: scheme/port allowlist, DNS check, no private IPs, manual redirects, size and time caps."""
-import ipaddress, socket, urllib.error, urllib.parse, urllib.request
-MAX_BYTES, TIMEOUT = 1_500_000, 8
+"""Safe fetching. Resolve ONCE, validate every address, then connect to that exact IP (closes the DNS-rebinding race).
+Scheme/port allowlist, no private IPs, manual redirects (each hop re-validated), size and time caps."""
+import http.client, ipaddress, socket, ssl, time, urllib.parse, urllib.request
+MAX_BYTES, TIMEOUT, DEADLINE = 1_500_000, 8, 15   # DEADLINE: total seconds for one fetch incl. redirects
 OK_TYPES = ("text/html", "text/plain", "application/xhtml+xml")
 
 class Blocked(Exception):
     """Message is safe to show to the user."""
 
-def check_url(url):
-    p = urllib.parse.urlsplit(url)
-    if p.scheme not in ("http", "https") or not p.hostname:
-        raise Blocked("Only http and https links are allowed.")
-    if p.username or p.password:
-        raise Blocked("Links with a username or password are not allowed.")
-    port = p.port or (443 if p.scheme == "https" else 80)
-    if port not in (80, 443):
-        raise Blocked("Only ports 80 and 443 are allowed.")
-    try:
-        infos = socket.getaddrinfo(p.hostname, port, proto=socket.IPPROTO_TCP)
-    except socket.gaierror:
-        raise Blocked("Could not find that address.")
-    for i in infos:
-        if not ipaddress.ip_address(i[4][0].split("%")[0]).is_global:
-            raise Blocked("That address points to a private or local network.")
-    return url
+def resolve(url):
+    """Returns (scheme, host, ip, port, target). Every resolved address must be public."""
+    try: p = urllib.parse.urlsplit(url); host, port = p.hostname, p.port
+    except ValueError: raise Blocked("That link is not valid.")
+    if p.scheme not in ("http", "https") or not host: raise Blocked("Only http and https links are allowed.")
+    if p.username or p.password: raise Blocked("Links with a username or password are not allowed.")
+    port = port or (443 if p.scheme == "https" else 80)
+    if port not in (80, 443): raise Blocked("Only ports 80 and 443 are allowed.")
+    try: infos = socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
+    except socket.gaierror: raise Blocked("Could not find that address.")
+    except (UnicodeError, ValueError): raise Blocked("That link is not valid.")
+    ips = sorted((i[4][0].split("%")[0] for i in infos), key=lambda x: ":" in x)   # IPv4 first: more reliable on serverless networks
+    if not ips or not all(ipaddress.ip_address(x).is_global for x in ips): raise Blocked("That address points to a private or local network.")
+    return p.scheme, host, ips[0], port, (p.path or "/") + ("?" + p.query if p.query else "")
 
-class _NoRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, *a, **k):
-        return None
+def check_url(url):
+    resolve(url); return url
+
+def _get(scheme, host, ip, port, target):
+    """One GET to the pinned ip. TLS still verifies the certificate against the hostname."""
+    if scheme == "https":
+        ctx = ssl.create_default_context()
+        class Conn(http.client.HTTPSConnection):
+            def connect(self):
+                self.sock = ctx.wrap_socket(socket.create_connection((ip, port), TIMEOUT), server_hostname=host)
+        c = Conn(host, port, timeout=TIMEOUT, context=ctx)
+    else:
+        class Conn(http.client.HTTPConnection):
+            def connect(self): self.sock = socket.create_connection((ip, port), TIMEOUT)
+        c = Conn(host, port, timeout=TIMEOUT)
+    c.request("GET", target, headers={"User-Agent": "DarkSpot/0.2 research prototype", "Accept": "text/html,text/plain", "Accept-Encoding": "identity"})
+    return c, c.getresponse()
 
 def fetch(url, hops=3):
-    """Returns (text, final_url, truncated). Every redirect hop is re-validated."""
-    opener = urllib.request.build_opener(_NoRedirect)
+    """Returns (text, final_url, truncated). Every redirect hop is re-resolved and re-validated."""
+    end = time.monotonic() + DEADLINE
     for _ in range(hops + 1):
-        check_url(url)
-        req = urllib.request.Request(url, headers={"User-Agent": "DarkSpot/0.1 research prototype"})
+        if time.monotonic() > end: raise Blocked("The site was too slow to respond.")
+        scheme, host, ip, port, target = resolve(url)
         try:
-            r = opener.open(req, timeout=TIMEOUT)
-        except urllib.error.HTTPError as e:
-            if e.code in (301, 302, 303, 307, 308) and e.headers.get("Location"):
-                url = urllib.parse.urljoin(url, e.headers["Location"])
-                continue
-            raise Blocked(f"The site returned error {e.code}.")
-        except (urllib.error.URLError, socket.timeout, TimeoutError):
-            raise Blocked("Could not reach the site.")
-        ctype = (r.headers.get("Content-Type") or "").split(";")[0].strip().lower()
-        if ctype not in OK_TYPES:
-            raise Blocked("Only web pages and plain text work. Paste the text instead.")
-        raw = r.read(MAX_BYTES + 1)
-        return raw[:MAX_BYTES].decode(r.headers.get_content_charset() or "utf-8", "replace"), url, len(raw) > MAX_BYTES
+            c, r = _get(scheme, host, ip, port, target)
+            try:
+                if r.status in (301, 302, 303, 307, 308) and r.getheader("Location"):
+                    url = urllib.parse.urljoin(url, r.getheader("Location")); continue
+                if r.status >= 400: raise Blocked(f"The site returned error {r.status}.")
+                ctype = (r.getheader("Content-Type") or "").split(";")[0].strip().lower()
+                if ctype not in OK_TYPES: raise Blocked("Only web pages and plain text work. Paste the text instead.")
+                if (r.getheader("Content-Encoding") or "identity").lower() != "identity":
+                    raise Blocked("The site sent compressed data this tool cannot read. Paste the text instead.")
+                raw = b""
+                while len(raw) <= MAX_BYTES:                       # read1 returns as soon as data arrives, so the deadline is enforced
+                    if time.monotonic() > end: raise Blocked("The site was too slow to respond.")
+                    chunk = r.read1(65536)
+                    if not chunk: break
+                    raw += chunk
+                body = raw[:MAX_BYTES]
+                try: text = body.decode(r.headers.get_content_charset() or "utf-8", "replace")
+                except LookupError: text = body.decode("utf-8", "replace")     # unknown charset name in the header
+                return text, url, len(raw) > MAX_BYTES
+            finally: c.close()
+        except Blocked: raise
+        except (OSError, http.client.HTTPException): raise Blocked("Could not reach the site.")
     raise Blocked("Too many redirects.")
 
 def pdf_text(b64, max_pages=30):

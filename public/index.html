@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>DarkSpot: find what your sources leave out</title>
+<meta name="description" content="Add the pages you found. DarkSpot shows where they conflict, what is missing and what is outdated, with the exact quote behind every claim.">
+<meta name="theme-color" content="#14283C"><meta property="og:title" content="DarkSpot: find what your sources leave out"><meta property="og:description" content="Conflicts, gaps and outdated details across your sources, each backed by a verbatim quote.">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml"><link rel="stylesheet" href="/style.css"></head>
+<body><a class="skip" href="#f">Skip to the form</a>
+<main id="main">
+<header class="hero">
+<p class="brand"><svg width="28" height="28" viewBox="0 0 64 64" aria-hidden="true"><rect width="64" height="64" rx="14" fill="currentColor"/><circle cx="30" cy="30" r="13" fill="none" stroke="var(--win)" stroke-width="5"/><path d="M40 40l11 11" stroke="var(--win)" stroke-width="6" stroke-linecap="round"/></svg> DarkSpot</p>
+<h1>Find what your sources leave out.</h1>
+<p class="lead">Add the pages you found. DarkSpot shows where they conflict, what is missing and what is outdated, with the exact quote behind every claim.</p>
+<ul class="trust"><li>Every finding has a quote</li><li>Code decides, not AI</li><li>Spots outdated cycles</li><li>Works offline</li></ul>
+<div class="btns"><button type="button" id="demo" class="cta">See it in 10 seconds</button><a class="ghost" href="#f">Check my own sources</a></div>
+</header>
+<form id="f" novalidate>
+<fieldset class="step"><legend><span class="n">1</span>What do you want to check?</legend>
+<label for="q" class="vh">Your question</label>
+<input id="q" maxlength="300" autocomplete="off" placeholder="What should I verify before applying for this scholarship?" aria-describedby="qerr">
+<p id="qerr" class="fielderr" role="alert"></p>
+<div class="ex" role="group" aria-label="Example questions"><span>Try:</span><button type="button" class="chipbtn" data-q="What should I verify before applying for this scholarship?" data-t="scholarship">Scholarship</button><button type="button" class="chipbtn" data-q="What should I verify before applying for a student visa?" data-t="visa">Student visa</button><button type="button" class="chipbtn" data-q="What should I check before enrolling in this course?" data-t="general">Course</button></div>
+</fieldset>
+<fieldset class="step"><legend><span class="n">2</span>Add what you found <small>up to 6 sources in total</small></legend>
+<div class="srcgrid">
+<div class="srcbox"><label for="u">Links</label><textarea id="u" rows="4" placeholder="https://…  (one per line)"></textarea></div>
+<div class="srcbox"><label for="t">Pasted text</label><textarea id="t" rows="4" placeholder="Paste page text. Put --- on its own line between pages."></textarea></div>
+<div class="srcbox drop" id="drop"><label for="pdf">PDF files</label><input type="file" id="pdf" accept="application/pdf" multiple><p class="small">Drop PDFs here. Text-based, up to 3, 600 KB each.</p></div>
+</div></fieldset>
+<details class="opts"><summary>Options</summary><div class="row"><div><label for="tpl">Checklist topic</label><select id="tpl"><option value="auto">Auto-detect from question</option><option value="scholarship">Scholarship</option><option value="visa">Visa or immigration</option><option value="general">General</option></select></div>
+<div><label for="mode">Reader</label><select id="mode"><option value="rules">Offline rules (default)</option><option value="claude">Optional AI reader (server needs a key)</option></select></div></div>
+<label class="chk"><input type="checkbox" id="disc"> Also discover pages by web search (needs BRAVE_API_KEY on the server)</label></details>
+<div class="btns"><button type="submit" class="primary">Check my sources</button></div>
+</form>
+<ol id="prog" aria-label="Progress" hidden><li data-s="1">Question</li><li data-s="2">Checklist</li><li data-s="3">Sources</li><li data-s="4">Verify</li><li data-s="5">Compare</li><li data-s="6">Dashboard</li></ol>
+<div id="plan" hidden><h3>What I will look for</h3><p id="plant"></p></div>
+<p id="status" role="status"></p>
+<section id="out" hidden aria-labelledby="vt">
+<div class="verdict" id="verdict">
+<div class="gauge" id="gauge" role="img" aria-label="Decision readiness"><span><b id="rdp"></b><small>ready</small></span></div>
+<div class="vtext"><h2 id="vt" tabindex="-1"></h2><p class="band" id="rdb"></p><p class="pathline" id="path"></p><ul id="tally" class="tally" aria-label="Findings by type"></ul>
+<label class="mt" for="meter">Coverage of expected items</label><meter id="meter" min="0" max="1" value="0"></meter><p id="mt" class="small"></p><details class="how"><summary>How this is scored</summary><p id="rdr" class="small"></p><p id="vn" class="small"></p></details></div></div>
+<div id="chg" class="note" hidden><h3>Changed since your last check</h3><ul id="chgl"></ul></div>
+<div id="dup" class="note warnbox" hidden></div>
+<div class="btns toolbar"><button type="button" id="copy">Copy checklist</button><button type="button" id="md">Download report (.md)</button><button type="button" id="json">Download evidence (.json)</button><button type="button" id="print">Print</button></div>
+<div class="key" role="group" aria-label="How to read each finding"><span class="lk sourced">Sourced: a verbatim quote</span><span class="lk derived">Derived: decided by code</span><span class="lk suggested">Suggested: not from the sources</span></div>
+<h3 id="ovh">What the sources say</h3>
+<div id="ovw" class="tablewrap" role="region" aria-labelledby="ovh" tabindex="0"><table id="ov"></table></div>
+<div id="cyc" class="note warnbox" hidden></div>
+<p class="small">Each cell is the page’s own wording, shown with its quote. “Not found” means not found on that page. Open a finding below to see the quote in context.</p>
+<h3 id="qh">Questions your sources leave unanswered</h3><ol id="qs" class="qs" aria-labelledby="qh"></ol>
+<div id="hedw" hidden><h3 id="hh">Where the sources admit it themselves</h3><div id="hed" aria-labelledby="hh"></div></div>
+<div class="sech"><h3>What to verify, highest priority first</h3><button type="button" id="expand" class="link" aria-expanded="false">Expand all</button></div>
+<div id="items"></div><div id="ok" class="okbox"></div>
+<details id="em" class="emailbox"><summary>Draft an email to the provider about the open items</summary><pre id="emt"></pre><button type="button" id="emc">Copy email</button></details>
+<h3>Pages reviewed</h3><div id="src"></div><p id="rc" class="small"></p>
+</section></main>
+<footer class="foot">Findings are signals from rules or AI, not facts. “Missing” means not found in the pages you gave it. Verify with the official source.</footer>
+<script src="/app.js"></script></body></html>

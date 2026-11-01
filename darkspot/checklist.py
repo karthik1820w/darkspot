@@ -34,3 +34,13 @@ def build(question, template="auto", llm=None):
         except Exception: pass
     t = detect(question)
     return SCHEMAS[t], "rules:" + t
+
+def describe(slots):
+    """JSON-safe form of a checklist (regex objects are rebuilt from terms on restore)."""
+    return [dict(id=x["id"], label=x["label"], kind=x["kind"], terms=x["terms"], verify=x["verify"], w=x["w"]) for x in slots]
+
+def restore(desc):
+    """Rebuild slots from client-supplied data. Built-in templates are referenced by name; anything else is re-validated."""
+    t = desc.get("template") if isinstance(desc, dict) else None
+    if t in SCHEMAS: return SCHEMAS[t]
+    return clean(desc.get("items") if isinstance(desc, dict) else None)
