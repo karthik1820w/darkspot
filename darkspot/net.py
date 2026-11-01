@@ -49,3 +49,32 @@ def fetch(url, hops=3):
         raw = r.read(MAX_BYTES + 1)
         return raw[:MAX_BYTES].decode(r.headers.get_content_charset() or "utf-8", "replace"), url, len(raw) > MAX_BYTES
     raise Blocked("Too many redirects.")
+
+def pdf_text(b64, max_pages=30):
+    """Stage 3: text layer of an uploaded PDF. Needs the optional pypdf package. Scans/encrypted files are refused, not guessed."""
+    try: from pypdf import PdfReader
+    except ImportError: raise Blocked("PDF reading needs: pip install pypdf")
+    import base64, io
+    try:
+        raw = base64.b64decode(b64, validate=True)
+        if raw[:5] != b"%PDF-": raise ValueError
+        r = PdfReader(io.BytesIO(raw))
+        if r.is_encrypted: raise Blocked("Encrypted PDFs are not supported.")
+        t = "\n".join((p.extract_text() or "") for p in r.pages[:max_pages])
+    except Blocked: raise
+    except Exception: raise Blocked("Could not read that PDF.")
+    if not t.strip(): raise Blocked("This PDF has no text layer (scanned?). Paste the text instead.")
+    return t
+
+def discover(q, n=3):
+    """Optional search discovery via Brave Search API (BRAVE_API_KEY). WRITTEN TO THE DOCUMENTED FORMAT, NOT RUN
+    in the build sandbox. Returned URLs still go through fetch(), so the SSRF checks apply."""
+    import json, os
+    key = os.environ.get("BRAVE_API_KEY")
+    if not key: raise Blocked("Search discovery is off: set BRAVE_API_KEY.")
+    req = urllib.request.Request("https://api.search.brave.com/res/v1/web/search?" + urllib.parse.urlencode({"q": q[:200], "count": n}),
+                                 headers={"X-Subscription-Token": key, "Accept": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=TIMEOUT) as r: d = json.load(r)
+    except Exception: raise Blocked("Search request failed.")
+    return [x["url"] for x in d.get("web", {}).get("results", []) if x.get("url")][:n]

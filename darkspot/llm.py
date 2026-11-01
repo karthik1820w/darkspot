@@ -1,7 +1,7 @@
 """Live mode: Claude finds quotes via the Citations feature. WRITTEN TO THE DOCUMENTED FORMAT, NOT RUN
 in the build sandbox (no network or key). Needs: pip install anthropic; ANTHROPIC_API_KEY; DARKSPOT_MODEL.
 Citations cannot be combined with structured outputs, so we ask for 'field_id: answer' lines and parse them."""
-import os, re
+import json, os, re
 
 class ClaudeExtractor:
     name = "claude"
@@ -30,3 +30,12 @@ class ClaudeExtractor:
                 if qs: out.append({"slot": m.group(1), "quote": qs[0].strip()})
             pos = end + 1
         return out
+
+    def propose(self, question):
+        """Stage 2 (live): Claude proposes the expected-answer checklist. Output is validated by checklist.clean()."""
+        r = self.client.messages.create(model=self.model, max_tokens=900, messages=[{"role": "user", "content":
+            "List 5 to 8 facts a person must confirm before acting on this question. Return ONLY a JSON array of objects with keys: "
+            "id (snake_case), label, kind (one of money,date,duration,url,text), terms (2-5 lowercase words a page stating it would contain), "
+            "verify (one sentence). Question: " + question}])
+        t = "".join(b.text for b in r.content if b.type == "text").strip()
+        return json.loads(re.sub(r"^```\w*|```$", "", t, flags=re.M).strip())
