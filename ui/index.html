@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>DarkSpot</title><link rel="stylesheet" href="/style.css"></head>
+<body><main>
+<h1>DarkSpot</h1><p class="sub">Find what’s missing before you decide.</p>
+<form id="f">
+<label for="q">What do you want to check?</label>
+<input id="q" maxlength="300" placeholder="What should I verify before applying for this scholarship?">
+<label for="u">Links to pages you found (one per line, up to 6)</label>
+<textarea id="u" rows="3" placeholder="https://…"></textarea>
+<label for="t">Or paste page text (separate pages with a line containing ---)</label>
+<textarea id="t" rows="3"></textarea>
+<div class="btns"><button type="submit" class="primary">Check sources</button><button type="button" id="demo">Try a sample</button></div>
+</form>
+<p id="status" role="status"></p>
+<section id="out" hidden>
+<div class="verdict"><h2 id="vt"></h2><p id="vn"></p></div>
+<div class="btns"><button type="button" id="copy">Copy checklist</button><button type="button" id="print">Print</button></div>
+<h3>Checklist, highest priority first</h3><div id="items"></div>
+<div id="ok"></div>
+<h3>Pages reviewed</h3><div id="src"></div>
+<p class="legend">Highlighted text is quoted from a page. Findings are rule-based signals to check, not facts. “Missing” means not found in these pages.</p>
+</section></main><script src="/app.js"></script></body></html>
